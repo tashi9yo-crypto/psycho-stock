@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "pandas>=2.0"]
 
 [project.optional-dependencies]
-data = ["yfinance>=0.2"]
+data = ["yfinance>=0.2", "pykrx>=1.0", "pytrends>=4.9"]
 dev = ["pytest>=7"]
 
 [project.scripts]

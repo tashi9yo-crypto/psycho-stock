@@ -6,6 +6,7 @@ import unicodedata
 
 import pandas as pd
 
+from .crowd import CROWD_FEATURES
 from .pipeline import Analysis
 from .sentiment import PHASES, fear_greed_label
 
@@ -24,6 +25,7 @@ FEATURE_NAMES_KO = {
     "euphoria_recent": "최근 광기 매수",
     "vix_level": "VIX(옵션 공포)",
     "news_sentiment_5": "뉴스 감정",
+    **{col: name for col, (_, name) in CROWD_FEATURES.items()},
 }
 
 
@@ -77,10 +79,23 @@ def render(analysis: Analysis, name: str = "") -> str:
     lines.append("")
 
     lines.append("[2] 감정 구성 요소 (0=극단적 공포, 100=극단적 탐욕)")
-    for col in [c for c in t.columns if c.startswith("fg_")]:
-        key = col.removeprefix("fg_")
-        label = FEATURE_NAMES_KO.get(key, FEATURE_NAMES_KO.get(key + "_5", key))
-        lines.append(f"  {_pad(label, 22)} {last[col]:5.0f}")
+    components = [c.removeprefix("fg_") for c in t.columns if c.startswith("fg_")]
+    groups = [
+        ("가격·거래량", [k for k in components if k not in CROWD_FEATURES]),
+        ("시장 전체 군중", [k for k in components if k in CROWD_FEATURES]),
+    ]
+    for title, keys in groups:
+        if not keys:
+            continue
+        lines.append(f"  - {title}")
+        for key in keys:
+            label = FEATURE_NAMES_KO.get(key, FEATURE_NAMES_KO.get(key + "_5", key))
+            value = last[f"fg_{key}"]
+            shown = "  N/A" if pd.isna(value) else f"{value:5.0f}"
+            lines.append(f"    {_pad(label, 22)} {shown}")
+    extra = [FEATURE_NAMES_KO[c] for c in CROWD_FEATURES if c in t.columns and CROWD_FEATURES[c][0] == 0]
+    if extra:
+        lines.append(f"  (예측 모델에만 쓰는 지표: {', '.join(extra)})")
     lines.append("")
 
     lines.append(f"[3] 예측: 앞으로 {h}거래일 뒤 가격이 지금보다 높을 확률")
@@ -113,5 +128,13 @@ def render(analysis: Analysis, name: str = "") -> str:
         )
     lines.append("  AUC 0.5 = 동전 던지기. 0.55 이상이면 의미 있는 신호일 가능성이 있다.")
     lines.append("")
+
+    if analysis.sources is not None:
+        lines.append("[6] 데이터 소스별 기여도 (가격·거래량 모델에 하나씩 더했을 때, 워크포워드)")
+        lines.append(f"  {_pad('모델', 20)}{'AUC':>7}{'변화':>8}{'샤프':>7}")
+        for model_name, row in analysis.sources.iterrows():
+            lines.append(f"  {_pad(model_name, 20)}{row['auc']:>7.3f}{row['auc_gain']:>+8.3f}{row['sharpe']:>7.2f}")
+        lines.append("  변화가 +0.01 미만이면 그 데이터는 이 시장에서 예측에 거의 도움이 안 된다는 뜻이다.")
+        lines.append("")
     lines.append("※ 확률적 참고 지표일 뿐 투자 권유가 아닙니다. 과거 패턴은 반복되지 않을 수 있습니다.")
     return "\n".join(lines)

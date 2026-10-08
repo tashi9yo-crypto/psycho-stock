@@ -62,6 +62,11 @@ def fetch_yahoo_close(ticker: str, start: str = "2000-01-01", end: str | None = 
 
 
 def synthetic_market(n_days: int = 3000, seed: int = 7, start: str = "2010-01-04") -> pd.DataFrame:
+    """군중심리가 가격을 움직이는 가상 시장의 시세 (자세한 설명은 _simulate)."""
+    return _simulate(n_days, seed, start)[0]
+
+
+def _simulate(n_days: int, seed: int, start: str) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     """군중심리가 가격을 움직이는 가상 시장 (에이전트 기반 모형).
 
     - 펀더멘털 가치는 랜덤워크로 천천히 움직인다.
@@ -77,7 +82,7 @@ def synthetic_market(n_days: int = 3000, seed: int = 7, start: str = "2010-01-04
     mood = 0.0  # -1(극단적 비관) ~ +1(극단적 낙관)
     prev_ret = 0.0
     trend = 0.0
-    closes, opens, highs, lows, vols = [], [], [], [], []
+    closes, opens, highs, lows, vols, moods, trends = [], [], [], [], [], [], []
 
     for _ in range(n_days):
         log_value += rng.normal(0.0003, 0.006)
@@ -104,6 +109,8 @@ def synthetic_market(n_days: int = 3000, seed: int = 7, start: str = "2010-01-04
 
         trend = 0.9 * trend + 0.1 * ret
         prev_ret = ret
+        moods.append(mood)
+        trends.append(trend)
         closes.append(close)
         opens.append(open_)
         highs.append(high)
@@ -111,7 +118,53 @@ def synthetic_market(n_days: int = 3000, seed: int = 7, start: str = "2010-01-04
         vols.append(volume)
 
     index = pd.bdate_range(start=start, periods=n_days, name="date")
-    return pd.DataFrame(
+    prices = pd.DataFrame(
         {"open": opens, "high": highs, "low": lows, "close": closes, "volume": vols},
         index=index,
     )
+    return prices, np.array(moods), np.array(trends)
+
+
+def synthetic_market_with_crowd(n_days: int = 3000, seed: int = 7, start: str = "2010-01-04"):
+    """가상 시장의 시세와, 같은 '분위기(mood)'에서 나온 시장 전체 군중 데이터.
+
+    개인 순매수·신용잔고·검색량·커뮤니티는 분위기를 잡음과 함께 따라가고,
+    풋/콜 비율은 반대로 움직인다. 구성 종목 40개로 시장 폭도 만든다.
+    """
+    from .crowd import CrowdData, breadth_from_constituents
+
+    prices, mood, trend = _simulate(n_days, seed, start)
+    rng = np.random.default_rng(seed + 1)
+    index = prices.index
+    market_ret = prices["close"].pct_change().fillna(0).to_numpy()
+
+    betas = rng.uniform(0.6, 1.4, 40)
+    idio = rng.normal(0, 0.015, (n_days, 40))
+    stock_ret = market_ret[:, None] * betas + idio + 0.002 * mood[:, None]
+    closes = pd.DataFrame(50 * np.exp(np.cumsum(np.log1p(np.clip(stock_ret, -0.5, 0.5)), axis=0)), index=index)
+
+    scale = 1e11
+    individual = scale * (0.8 * mood + 40 * trend + rng.normal(0, 0.6, n_days))
+    foreign = scale * (-0.4 * mood + rng.normal(0, 0.6, n_days))
+    flows = pd.DataFrame({"individual": individual, "foreign": foreign, "institution": -(individual + foreign)}, index=index)
+
+    credit = pd.Series(1e13 * np.exp(np.cumsum(0.0015 * mood + rng.normal(0, 0.002, n_days))), index=index)
+    put_call = pd.Series(np.clip(0.9 - 0.35 * mood + rng.normal(0, 0.12, n_days), 0.3, 2.0), index=index)
+
+    weekly_mood = pd.Series(mood, index=index).resample("W-SAT").mean()
+    weekly_mood.index = weekly_mood.index - pd.DateOffset(days=6)  # 구글 트렌드처럼 주 시작일(일요일) 표기
+    k = len(weekly_mood)
+    trends = pd.DataFrame({
+        "greed_search": np.clip(50 + 35 * weekly_mood.to_numpy() + rng.normal(0, 8, k), 0, 100),
+        "fear_search": np.clip(40 - 35 * weekly_mood.to_numpy() + rng.normal(0, 8, k), 0, 100),
+    }, index=weekly_mood.index)
+
+    posts = rng.poisson(20 + 120 * np.abs(mood))
+    sentiment = np.clip(0.8 * mood + rng.normal(0, 0.25, n_days), -1, 1)
+    community = pd.DataFrame({"posts": posts.astype(float), "sentiment": sentiment}, index=index)
+
+    crowd = CrowdData(
+        breadth=breadth_from_constituents(closes), flows=flows, credit=credit,
+        put_call=put_call, trends=trends, community=community,
+    )
+    return prices, crowd

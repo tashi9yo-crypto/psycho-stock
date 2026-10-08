@@ -104,3 +104,93 @@ def test_cli_with_csv(tmp_path, capsys):
     text = capsys.readouterr().out
     assert "공포·탐욕 지수" in text and "워크포워드" in text
     assert "proba_up" in pd.read_csv(out_path).columns
+
+
+# ------------------------------------------------------------ 시장 전체 군중 데이터
+
+from psycho_stock import crowd as crowd_mod  # noqa: E402
+from psycho_stock.data import synthetic_market_with_crowd  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def crowd_market():
+    return synthetic_market_with_crowd(n_days=1300)
+
+
+def test_breadth_from_constituents():
+    idx = pd.bdate_range("2020-01-01", periods=60)
+    up = np.linspace(10, 20, 60)
+    closes = pd.DataFrame({"a": up, "b": up, "c": up[::-1]}, index=idx)
+    b = crowd_mod.breadth_from_constituents(closes)
+    assert (b["advancers"] == 2).all() and (b["decliners"] == 1).all()
+    assert b["new_highs"].iloc[-1] == 2 and b["new_lows"].iloc[-1] == 1
+
+
+def test_crowd_alignment_respects_publication_lag():
+    idx = pd.bdate_range("2024-01-01", periods=40)
+    weekly = pd.DataFrame({"greed_search": 10.0, "fear_search": 10.0}, index=pd.date_range("2023-12-31", periods=6, freq="7D"))
+    weekly.loc["2024-01-14", "greed_search"] = 90.0  # 1/14(일)~1/20(토) 주
+    out = crowd_mod.crowd_indicators(crowd_mod.CrowdData(trends=weekly), idx)
+    assert out.loc["2024-01-19", "search_mood"] == 0  # 그 주가 끝나기 전엔 알 수 없다
+    assert out.loc["2024-01-22", "search_mood"] > 0.5
+
+    credit = pd.Series(np.arange(1, 41, dtype=float), index=idx)
+    credit.iloc[30] = 1000.0
+    lagged = crowd_mod._align(credit, idx, lag_bdays=2)
+    assert lagged.iloc[32] == 1000.0 and lagged.iloc[31] != 1000.0
+
+
+def test_crowd_no_lookahead(crowd_market):
+    prices, crowd = crowd_market
+    full = build_table(prices, crowd=crowd)
+    cut_prices = prices.iloc[:1000]
+    cut_crowd = crowd_mod.CrowdData(**{
+        k: getattr(crowd, k)[getattr(crowd, k).index <= cut_prices.index[-1]] for k in crowd.available()
+    })
+    cut = build_table(cut_prices, crowd=cut_crowd)
+    cols = [c for c in cut.columns if c != "phase"]
+    pd.testing.assert_frame_equal(full.iloc[:1000][cols], cut[cols])
+
+
+def test_crowd_features_enter_index_and_model(crowd_market):
+    prices, crowd = crowd_market
+    result = analyze(prices, crowd=crowd)
+    table = result.table
+    for col in crowd_mod.CROWD_FEATURES:
+        assert col in table.columns, col
+        assert col in result.backtest.feature_names
+    assert "fg_retail_flow" in table.columns and "fg_put_call" in table.columns
+    assert "fg_foreign_flow" not in table.columns  # 방향 0 은 지수에 넣지 않는다
+    assert result.sources is not None
+    assert {"가격·거래량만", "+ 투자자 수급", "+ 커뮤니티", "전체"} <= set(result.sources.index)
+    # 가상 시장에서 개인 순매수와 풋/콜은 분위기와 같은/반대 방향이어야 한다
+    corr = table[["retail_flow", "put_call", "fear_greed"]].corr()
+    assert corr.loc["retail_flow", "fear_greed"] > 0
+    assert corr.loc["put_call", "fear_greed"] < 0
+
+
+def test_crowd_dir_roundtrip_and_cli(tmp_path, crowd_market, capsys):
+    prices, crowd = crowd_market
+    crowd_dir = tmp_path / "crowd"
+    crowd_mod.save_crowd_dir(crowd, crowd_dir)
+    loaded = crowd_mod.load_crowd_dir(crowd_dir)
+    assert set(loaded.available()) == set(crowd.available())
+
+    raw_posts = pd.DataFrame({"date": ["2024-01-02"] * 3 + ["2024-01-03"],
+                              "text": ["가즈아 풀매수", "떡상 간다", "물림 손절", "반대매매 공포"]})
+    daily = crowd_mod.community_daily(raw_posts)
+    assert daily.loc["2024-01-02", "posts"] == 3 and daily.loc["2024-01-03", "sentiment"] < 0
+
+    price_path = tmp_path / "prices.csv"
+    prices.to_csv(price_path)
+    assert main(["--csv", str(price_path), "--crowd-dir", str(crowd_dir)]) == 0
+    text = capsys.readouterr().out
+    assert "시장 전체 군중" in text and "데이터 소스별 기여도" in text
+
+
+def test_trend_columns_classified_by_keyword(tmp_path):
+    path = tmp_path / "trends.csv"
+    pd.DataFrame({"date": ["2024-01-07", "2024-01-14"], "주식 추천": [50, 60], "주식 폭락": [10, 80]}).to_csv(path, index=False)
+    loaded = crowd_mod.load_crowd_dir(tmp_path)
+    assert list(loaded.trends.columns) == ["greed_search", "fear_search"]
+    assert loaded.trends["fear_search"].iloc[1] == 80

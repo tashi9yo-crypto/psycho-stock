@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from .crowd import CROWD_FEATURES, SOURCE_FEATURES
 from .sentiment import PHASES
 
 BASE_FEATURES = [
@@ -29,7 +30,7 @@ BASE_FEATURES = [
     "capitulation_recent",
     "euphoria_recent",
 ]
-OPTIONAL_FEATURES = ["vix_level", "news_sentiment_5"]
+OPTIONAL_FEATURES = ["vix_level", "news_sentiment_5", *CROWD_FEATURES]
 
 
 def build_features(table: pd.DataFrame) -> pd.DataFrame:
@@ -42,10 +43,9 @@ def build_features(table: pd.DataFrame) -> pd.DataFrame:
     f["volume_surge_5"] = table["volume_surge"].rolling(5, min_periods=1).mean()
     f["capitulation_recent"] = table["capitulation"].rolling(10, min_periods=1).max()
     f["euphoria_recent"] = table["euphoria"].rolling(10, min_periods=1).max()
-    if "vix_level" in table:
-        f["vix_level"] = table["vix_level"]
-    if "news_sentiment" in table:
-        f["news_sentiment_5"] = table["news_sentiment"].fillna(0).rolling(5, min_periods=1).mean()
+    for col in OPTIONAL_FEATURES:
+        if col in table:
+            f[col] = table[col]
     if "phase" in table:
         for key in PHASES:
             f[f"phase_{key}"] = (table["phase"] == key).astype(float)
@@ -132,6 +132,7 @@ def walk_forward(
     threshold: float = 0.5,
     cost: float = 0.001,
     l2: float = 5.0,
+    exclude: list[str] | None = None,
 ) -> BacktestResult:
     """워크포워드 백테스트.
 
@@ -139,6 +140,8 @@ def walk_forward(
     확률이 threshold 보다 높으면 다음 날 보유, 아니면 현금으로 둔다.
     """
     features = build_features(table)
+    if exclude:
+        features = features.drop(columns=[c for c in exclude if c in features.columns])
     names = list(features.columns)
     target = forward_return(table["close"], horizon)
     label = (target > 0).astype(float).where(target.notna())
@@ -204,6 +207,28 @@ def walk_forward(
         else pd.Series(dtype=float)
     )
     return BacktestResult(pred, metrics, strategies, coefs, names)
+
+
+def source_contribution(table: pd.DataFrame, horizon: int = 20, **kwargs) -> pd.DataFrame:
+    """데이터 소스별 기여도: '가격만' 모델에 각 소스를 하나씩 더했을 때의 워크포워드 AUC.
+
+    실제 시장에서 어떤 대중심리 데이터가 정말 도움이 되는지 판단하는 데 쓴다.
+    """
+    present = {src: [c for c in cols if c in table.columns] for src, cols in SOURCE_FEATURES.items()}
+    present = {src: cols for src, cols in present.items() if cols}
+    extra = [c for cols in present.values() for c in cols]
+    rows = []
+    base = walk_forward(table, horizon=horizon, exclude=extra, **kwargs)
+    rows.append(("가격·거래량만", base.metrics["auc"], base.strategies["심리 모델"]["sharpe"]))
+    for src, cols in present.items():
+        bt = walk_forward(table, horizon=horizon, exclude=[c for c in extra if c not in cols], **kwargs)
+        rows.append((f"+ {src}", bt.metrics["auc"], bt.strategies["심리 모델"]["sharpe"]))
+    if len(present) > 1:
+        full = walk_forward(table, horizon=horizon, **kwargs)
+        rows.append(("전체", full.metrics["auc"], full.strategies["심리 모델"]["sharpe"]))
+    out = pd.DataFrame(rows, columns=["model", "auc", "sharpe"]).set_index("model")
+    out["auc_gain"] = out["auc"] - out.loc["가격·거래량만", "auc"]
+    return out
 
 
 def phase_statistics(table: pd.DataFrame, horizon: int = 20) -> pd.DataFrame:

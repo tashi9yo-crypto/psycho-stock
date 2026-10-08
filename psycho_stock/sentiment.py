@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .crowd import CROWD_FEATURES
 from .indicators import rolling_percentile
 
 # (지표 컬럼, 방향) — 방향 +1 이면 값이 클수록 탐욕, -1 이면 클수록 공포.
@@ -18,7 +19,8 @@ FEAR_GREED_COMPONENTS: list[tuple[str, int]] = [
     ("volume_surge", +1),
     ("up_day_ratio", +1),
     ("vix_level", -1),
-]
+    ("news_sentiment_5", +1),
+] + [(col, direction) for col, (direction, _) in CROWD_FEATURES.items() if direction != 0]
 
 # 월스트리트 심리 사이클 (Wall Street Cheat Sheet) 를 단순화한 국면.
 PHASES = {
