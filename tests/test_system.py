@@ -194,3 +194,11 @@ def test_trend_columns_classified_by_keyword(tmp_path):
     loaded = crowd_mod.load_crowd_dir(tmp_path)
     assert list(loaded.trends.columns) == ["greed_search", "fear_search"]
     assert loaded.trends["fear_search"].iloc[1] == 80
+
+
+def test_html_dashboard(tmp_path, capsys):
+    out = tmp_path / "report.html"
+    assert main(["--synthetic", "--no-compare", "--html", str(out)]) == 0
+    html = out.read_text(encoding="utf-8")
+    assert html.startswith("<!doctype html>") and "군중심리 계기판" in html
+    assert '"fear_greed"' in html and "__DATA__" not in html

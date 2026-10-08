@@ -95,6 +95,9 @@ psycho-stock --ticker SPY --vix --breadth-tickers AAPL,MSFT,NVDA,AMZN,GOOGL,META
 
 # 인터넷 없이 시연 (가상 시장 + 가상 군중 데이터 전부)
 psycho-stock --synthetic
+
+# 브라우저로 보는 대시보드 (차트 포함, HTML 한 파일)
+psycho-stock --ticker ^KS11 --vix ^VKOSPI --html report.html   # 만든 뒤 report.html 을 더블클릭
 ```
 
 `--crowd-dir` 폴더에는 아래 이름의 CSV 를 있는 것만 넣으면 됩니다 (형식 예시: `examples/crowd/`).

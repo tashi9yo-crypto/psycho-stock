@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--horizon", type=int, default=20, help="예측 기간(거래일)")
     parser.add_argument("--threshold", type=float, default=0.5, help="보유 결정 확률 기준")
     parser.add_argument("--export", help="일별 분석 테이블을 CSV 로 저장할 경로")
+    parser.add_argument("--html", help="브라우저로 보는 대시보드를 저장할 경로 (예: report.html)")
     args = parser.parse_args(argv)
 
     crowd = crowd_mod.CrowdData()
@@ -87,6 +88,14 @@ def main(argv: list[str] | None = None) -> int:
     result = analyze(prices, vix=vix, news_sentiment=news, crowd=crowd, horizon=args.horizon,
                      threshold=args.threshold, compare_sources=not args.no_compare)
     print(render(result, name))
+
+    if args.html:
+        from pathlib import Path
+
+        from .html_report import render_html
+
+        Path(args.html).write_text(render_html(result, name), encoding="utf-8")
+        print(f"\n대시보드 저장: {args.html}  (브라우저로 여세요)")
 
     if args.export:
         out = result.table.join(result.backtest.predictions[["proba_up", "position"]])
